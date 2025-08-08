@@ -1,0 +1,215 @@
+---
+# Main playbook to deploy the sudo web UI and manage sudoers across a
+# fleet of RHEL servers using Red Hat Satellite for inventory.  This
+# playbook extends the earlier `deploy_webui_with_satellite.yml` by
+# supporting multiple environments (e.g. dev, test, uat) as well as
+# explicit hostnames.  When no environments or hostnames are provided,
+# it will target all Satellite‑registered hosts.  After determining
+# the target host list it will clone the Git repository containing
+# per‑host sudoers files, apply your requested changes and push
+# them back.  Finally it triggers the web UI backend to deploy the
+# updated policies.
+
+## Expected variables
+
+# satellite_api_url: Base URL of your Satellite API (e.g.
+#                    "https://satellite.example.com/api/v2").
+# satellite_username / satellite_password: Credentials for the API.
+# host_collection_map: Dictionary mapping environment names to lists of
+#   Satellite host collection names.  For example:
+#     host_collection_map:
+#       dev: ["Dev Web", "Dev DB"]
+#       test: ["Test Web", "Test DB"]
+#       uat: ["UAT App", "UAT DB"]
+# envs: Optional list of environment keys to select (e.g. ["dev", "test"]).
+#       If omitted or empty, and hostnames is not provided, all hosts
+#       will be targeted.
+# hostnames: Optional list of explicit hostnames to manage.  If
+#   provided, host collection lookup is skipped.
+# git_repo_url: URL of the Git repository storing per‑host sudoers files.
+# git_dest: Local path to clone the repository (e.g. "/tmp/sudo_repo").
+# git_branch: Branch name to operate on (e.g. "gpt-agent").
+# sudo_group: The group name to add or remove from the sudoers files.
+# sudo_action: "add" or "remove".
+# sudo_template: Name of the command template selected in the UI.
+# duo_exclude: Boolean flag whether to exclude from Duo MFA.
+# expiry_days: Optional number of days before the access should expire.  If
+#   omitted or zero, no expiry metadata will be written.
+
+- hosts: webui
+  become: true
+  vars:
+    sudo_webui_repo_url: "{{ git_repo_url }}"
+    sudo_webui_version: "{{ git_branch }}"
+    sudo_webui_env: {}
+  roles:
+    - ansible-role-sudo-webui
+
+- hosts: localhost
+  gather_facts: false
+  vars:
+    target_hosts: []
+  tasks:
+    - name: Determine hosts from explicit hostnames
+      set_fact:
+        target_hosts: "{{ hostnames }}"
+      when: hostnames is defined and hostnames | length > 0
+
+    - name: Query Satellite for host collections when envs are defined and hostnames not provided
+      uri:
+        url: "{{ satellite_api_url | regex_replace('/api/v2$', '') }}/katello/api/host_collections"
+        method: GET
+        user: "{{ satellite_username }}"
+        password: "{{ satellite_password }}"
+        headers:
+          Accept: "application/json"
+        force_basic_auth: true
+        validate_certs: false
+      register: all_collections
+      when: target_hosts | length == 0 and envs is defined and envs | length > 0
+
+    - name: Build list of host collections from all requested envs
+      set_fact:
+        filtered_collections: >-
+          {{ all_collections.json.results | selectattr('name', 'in', (envs | map('extract', host_collection_map) | sum(start=[]))) | list }}
+      when: all_collections is defined
+
+    - name: Initialise target_hosts when using collections
+      set_fact:
+        target_hosts: []
+      when: target_hosts | length == 0 and filtered_collections is defined
+
+    - name: Fetch hosts for each selected collection
+      vars:
+        current_collection: "{{ item }}"
+      block:
+        - name: Get host collection metadata
+          uri:
+            url: "{{ satellite_api_url | regex_replace('/api/v2$', '') }}/katello/api/host_collections/{{ current_collection.id }}"
+            method: GET
+            user: "{{ satellite_username }}"
+            password: "{{ satellite_password }}"
+            headers:
+              Accept: "application/json"
+            force_basic_auth: true
+            validate_certs: false
+          register: collection_metadata
+
+        - name: Fetch hostnames from host IDs
+          uri:
+            url: "{{ satellite_api_url | regex_replace('/api/v2$', '') }}/api/hosts/{{ host_id }}"
+            method: GET
+            user: "{{ satellite_username }}"
+            password: "{{ satellite_password }}"
+            headers:
+              Accept: "application/json"
+            force_basic_auth: true
+            validate_certs: false
+          loop: "{{ collection_metadata.json.host_ids | default([]) }}"
+          loop_control:
+            loop_var: host_id
+          register: host_lookup
+          when: collection_metadata.status == 200 and collection_metadata.json.host_ids is defined
+
+        - name: Append discovered hostnames to target_hosts
+          set_fact:
+            target_hosts: "{{ target_hosts + (host_lookup.results | map(attribute='json.name') | list) }}"
+          when: host_lookup is defined
+      loop: "{{ filtered_collections }}"
+      when: target_hosts | length == 0 and filtered_collections is defined
+
+    - name: Query Satellite for all hosts when no envs or hostnames are provided
+      uri:
+        url: "{{ satellite_api_url | regex_replace('/api/v2$', '') }}/api/hosts"
+        method: GET
+        user: "{{ satellite_username }}"
+        password: "{{ satellite_password }}"
+        headers:
+          Accept: "application/json"
+        force_basic_auth: true
+        validate_certs: false
+      register: all_hosts
+      when: target_hosts | length == 0 and (envs is not defined or envs | length == 0)
+
+    - name: Set target_hosts to all hostnames
+      set_fact:
+        target_hosts: "{{ all_hosts.json.results | map(attribute='name') | list }}"
+      when: all_hosts is defined
+
+    - name: Debug final list of hosts
+      debug:
+        var: target_hosts
+
+    - name: Clone sudoers repository
+      git:
+        repo: "{{ git_repo_url }}"
+        dest: "{{ git_dest }}"
+        version: "{{ git_branch }}"
+        accept_hostkey: true
+      delegate_to: localhost
+
+    - name: Update sudoers files for each host
+      vars:
+        host_file: "{{ git_dest }}/{{ item }}.sudoers"
+      block:
+        - name: Ensure sudoers file exists
+          file:
+            path: "{{ host_file }}"
+            state: touch
+
+        - name: Insert or remove sudo group entry
+          blockinfile:
+            path: "{{ host_file }}"
+            marker: "# {mark} ANSIBLE MANAGED BLOCK for {{ sudo_group }}"
+            block: |
+              %{{ sudo_group }} ALL=(ALL) {{ sudo_template_commands | default('ALL') }}
+            state: present
+          when: sudo_action | lower == 'add'
+
+        - name: Remove sudo group entry
+          blockinfile:
+            path: "{{ host_file }}"
+            marker: "# {mark} ANSIBLE MANAGED BLOCK for {{ sudo_group }}"
+            state: absent
+          when: sudo_action | lower == 'remove'
+
+        - name: Add expiry annotation if expiry_days provided
+          lineinfile:
+            path: "{{ host_file }}"
+            insertafter: EOF
+            line: "# expires={{ (ansible_date_time.iso8601_basic | to_datetime).strftime('%Y%m%d') | to_datetime('%Y%m%d') + expiry_days | default(0) | int | string }}"
+          when: expiry_days is defined and expiry_days | int > 0 and sudo_action | lower == 'add'
+
+      loop: "{{ target_hosts }}"
+
+    - name: Validate modified sudoers files with visudo
+      command: "visudo -cf {{ item }}"
+      loop: "{{ lookup('fileglob', git_dest + '/*.sudoers', wantlist=True) }}"
+      delegate_to: localhost
+
+    - name: Commit and push changes to Git
+      git:
+        repo: "{{ git_dest }}"
+        commit: yes
+        push: yes
+        msg: "{{ sudo_action | capitalize }} group {{ sudo_group }} on hosts {{ target_hosts | join(', ') }} via automation"
+      delegate_to: localhost
+
+    - name: Trigger web UI API to deploy changes
+      uri:
+        url: "http://{{ groups['webui'][0] }}:{{ sudo_webui_port | default(5000) }}/api/request"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          requester: "ansible"
+          action: "{{ sudo_action }}"
+          sudo_group: "{{ sudo_group }}"
+          template: "{{ sudo_template }}"
+          hostnames: "{{ target_hosts }}"
+          service_account: false
+          duo_exclude: "{{ duo_exclude | default(false) }}"
+          expiry_days: "{{ expiry_days | default(0) }}"
+      delegate_to: localhost
+      when: target_hosts | length > 0
