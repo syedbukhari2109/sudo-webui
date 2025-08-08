@@ -1,0 +1,6 @@
+---
+# Template for Finance team
+commands:
+  - /usr/bin/psql
+  - /usr/bin/cat
+  - /usr/bin/top

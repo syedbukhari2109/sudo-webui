@@ -1,0 +1,6 @@
+---
+# Template for Unix team
+commands:
+  - /usr/bin/useradd
+  - /usr/bin/systemctl
+  - /usr/bin/journalctl

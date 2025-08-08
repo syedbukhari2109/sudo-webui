@@ -1,0 +1,6 @@
+---
+# Template for DBS team
+commands:
+  - /usr/bin/mysql
+  - /usr/bin/backup.sh
+  - /usr/bin/restore.sh

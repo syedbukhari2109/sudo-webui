@@ -1,0 +1,6 @@
+---
+# Template for TBS team
+commands:
+  - /usr/bin/tar
+  - /usr/bin/unzip
+  - /opt/tools/monitor.sh

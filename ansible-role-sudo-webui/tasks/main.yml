@@ -1,0 +1,72 @@
+---
+# tasks file for ansible-role-sudo-webui
+
+- name: Ensure required system packages are installed
+  ansible.builtin.package:
+    name:
+      - python3
+      - python3-pip
+      - git
+    state: present
+
+- name: Create application group
+  ansible.builtin.group:
+    name: "{{ sudo_webui_user }}"
+    state: present
+
+- name: Create application user
+  ansible.builtin.user:
+    name: "{{ sudo_webui_user }}"
+    group: "{{ sudo_webui_user }}"
+    system: yes
+    create_home: no
+
+- name: Create install directory
+  ansible.builtin.file:
+    path: "{{ sudo_webui_install_dir }}"
+    state: directory
+    owner: "{{ sudo_webui_user }}"
+    group: "{{ sudo_webui_user }}"
+    mode: '0755'
+
+- name: Clone sudo web UI repository
+  ansible.builtin.git:
+    repo: "{{ sudo_webui_repo_url }}"
+    dest: "{{ sudo_webui_install_dir }}"
+    version: "{{ sudo_webui_version }}"
+    update: yes
+    force: yes
+    accept_hostkey: yes
+  become_user: "{{ sudo_webui_user }}"
+
+- name: Ensure virtual environment exists
+  ansible.builtin.command: python3 -m venv venv
+  args:
+    chdir: "{{ sudo_webui_install_dir }}"
+    creates: "{{ sudo_webui_install_dir }}/venv"
+  become_user: "{{ sudo_webui_user }}"
+
+- name: Install Python dependencies
+  ansible.builtin.pip:
+    requirements: "{{ sudo_webui_install_dir }}/requirements.txt"
+    virtualenv: "{{ sudo_webui_install_dir }}/venv"
+    virtualenv_command: python3 -m venv
+  become_user: "{{ sudo_webui_user }}"
+
+- name: Create systemd service file
+  ansible.builtin.template:
+    src: sudo-webui.service.j2
+    dest: "/etc/systemd/system/sudo-webui.service"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: yes
+
+- name: Ensure sudo-webui service is started and enabled
+  ansible.builtin.systemd:
+    name: sudo-webui.service
+    state: started
+    enabled: yes

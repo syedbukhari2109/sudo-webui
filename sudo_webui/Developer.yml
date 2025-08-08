@@ -1,0 +1,6 @@
+---
+# Template for Developers
+commands:
+  - /usr/bin/git
+  - /usr/bin/docker
+  - /opt/app/bin/deploy.sh

@@ -1,0 +1,18 @@
+[Unit]
+Description=Self-service sudo web UI
+After=network.target
+
+[Service]
+Type=simple
+User={{ sudo_webui_user }}
+Group={{ sudo_webui_user }}
+WorkingDirectory={{ sudo_webui_install_dir }}
+Environment="PATH={{ sudo_webui_install_dir }}/venv/bin:/usr/bin:/bin"
+{% for key, value in sudo_webui_env.items() %}
+Environment="{{ key }}={{ value }}"
+{% endfor %}
+ExecStart={{ sudo_webui_install_dir }}/venv/bin/python {{ sudo_webui_install_dir }}/app.py --host 0.0.0.0 --port {{ sudo_webui_port }}
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
