@@ -1,0 +1,6 @@
+---
+# Template for the DBA team
+commands:
+  - /usr/bin/mysql
+  - /usr/bin/oracle
+  - /usr/bin/systemctl

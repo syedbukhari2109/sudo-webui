@@ -1,0 +1,9 @@
+---
+# Default variables for ansible-role-sudo-webui
+
+sudo_webui_repo_url: ""
+sudo_webui_version: "main"
+sudo_webui_install_dir: "/opt/sudo-webui"
+sudo_webui_user: "sudo-webui"
+sudo_webui_port: 5000
+sudo_webui_env: {}

@@ -1,0 +1,18 @@
+---
+galaxy_info:
+  role_name: sudo-webui
+  author: Your Name
+  description: Install and configure the self-service sudo web UI
+  company: ""
+  license: MIT
+  min_ansible_version: "2.12"
+  platforms:
+    - name: EL
+      versions:
+        - "9"
+  galaxy_tags:
+    - sudo
+    - web
+    - automation
+
+dependencies: []

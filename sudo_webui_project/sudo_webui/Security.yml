@@ -1,0 +1,5 @@
+---
+# Template for the Security team
+commands:
+  - /usr/bin/nmap
+  - /usr/bin/firewalld

@@ -1,0 +1,6 @@
+---
+# Template for the Web team
+commands:
+  - /usr/bin/systemctl
+  - /usr/bin/nginx
+  - /usr/bin/curl

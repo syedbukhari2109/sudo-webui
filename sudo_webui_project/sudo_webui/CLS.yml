@@ -1,0 +1,6 @@
+---
+# Template for CLS team
+commands:
+  - /usr/bin/rsync
+  - /usr/bin/ssh
+  - /bin/cp
