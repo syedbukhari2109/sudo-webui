@@ -1,0 +1,149 @@
+---
+# Playbook to deploy the sudo web UI on a RHEL9 host and integrate with
+# Red Hat Satellite to pull host lists based on host collection groups or
+# explicit hostnames.  This playbook assumes that you have already
+# created the `agent-gpt` branch in your GitHub repository and uploaded
+# the application code.  It uses the `ansible-role-sudo-webui` role to
+# install the web UI and includes tasks to query Satellite for hosts.
+
+## Variables
+
+# satellite_api_url: URL to your Satellite API, e.g. "https://satellite.example.com/api/v2"
+# satellite_username / satellite_password: credentials for Satellite API
+# host_collection_map: a dictionary mapping environment names to lists
+#   of host collection names.  For example:
+#   host_collection_map:
+#     dev: [ "Dev Web", "Dev DB" ]
+#     qa: [ "QA Web", "QA DB" ]
+#     prod: [ "Prod Web", "Prod DB" ]
+# env: optional environment key (e.g. dev, qa, prod) to select groups
+# hostnames: optional list of explicit hostnames to manage.  If
+#   provided, this will bypass host collection lookup.
+# sudo_webui_repo_url: GitHub repository URL for the web UI (HTTPS)
+# sudo_webui_env: environment variables for the web UI (see role README)
+
+- hosts: webui
+  become: true
+  vars:
+    sudo_webui_repo_url: "{{ github_repo_url }}"
+    sudo_webui_version: "agent-gpt"
+    sudo_webui_env: {}
+  roles:
+    - ansible-role-sudo-webui
+
+- hosts: localhost
+  gather_facts: false
+  vars:
+    target_hosts: []
+  tasks:
+    - name: Determine target hosts from explicit hostnames
+      set_fact:
+        target_hosts: "{{ hostnames }}"
+      when: hostnames is defined and hostnames | length > 0
+
+    - name: Query Satellite for host collections when env is defined and hostnames not provided
+      uri:
+        url: "{{ satellite_api_url | regex_replace('/api/v2$', '') }}/katello/api/host_collections"
+        method: GET
+        user: "{{ satellite_username }}"
+        password: "{{ satellite_password }}"
+        headers:
+          Accept: "application/json"
+        force_basic_auth: true
+        validate_certs: false
+      register: all_collections
+      when: target_hosts | length == 0 and env is defined
+
+    - name: Filter collections based on env
+      set_fact:
+        filtered_collections: >-
+          {{ all_collections.json.results | selectattr('name', 'in', host_collection_map[env]) | list }}
+      when: all_collections is defined
+
+    - name: Initialise target_hosts list when using collections
+      set_fact:
+        target_hosts: []
+      when: target_hosts | length == 0 and filtered_collections is defined
+
+    - name: Fetch hosts for each collection
+      vars:
+        current_collection: "{{ item }}"
+      block:
+        - name: Get host collection metadata
+          uri:
+            url: "{{ satellite_api_url | regex_replace('/api/v2$', '') }}/katello/api/host_collections/{{ current_collection.id }}"
+            method: GET
+            user: "{{ satellite_username }}"
+            password: "{{ satellite_password }}"
+            headers:
+              Accept: "application/json"
+            force_basic_auth: true
+            validate_certs: false
+          register: collection_metadata
+
+        - name: Fetch hostnames from host IDs
+          uri:
+            url: "{{ satellite_api_url | regex_replace('/api/v2$', '') }}/api/hosts/{{ host_id }}"
+            method: GET
+            user: "{{ satellite_username }}"
+            password: "{{ satellite_password }}"
+            headers:
+              Accept: "application/json"
+            force_basic_auth: true
+            validate_certs: false
+          loop: "{{ collection_metadata.json.host_ids | default([]) }}"
+          loop_control:
+            loop_var: host_id
+          register: host_lookup
+          when: collection_metadata.status == 200 and collection_metadata.json.host_ids is defined
+
+        - name: Append discovered hostnames to target_hosts
+          set_fact:
+            target_hosts: "{{ target_hosts + (host_lookup.results | map(attribute='json.name') | list) }}"
+          when: host_lookup is defined
+      loop: "{{ filtered_collections }}"
+      when: target_hosts | length == 0 and filtered_collections is defined
+
+    - name: Query Satellite for all hosts when env and hostnames are not provided
+      uri:
+        url: "{{ satellite_api_url | regex_replace('/api/v2$', '') }}/api/hosts"
+        method: GET
+        user: "{{ satellite_username }}"
+        password: "{{ satellite_password }}"
+        headers:
+          Accept: "application/json"
+        force_basic_auth: true
+        validate_certs: false
+      register: all_hosts
+      when: target_hosts | length == 0 and (env is not defined)
+
+    - name: Set target_hosts to all hostnames
+      set_fact:
+        target_hosts: "{{ all_hosts.json.results | map(attribute='name') | list }}"
+      when: all_hosts is defined
+
+    - name: Debug final list of hosts
+      debug:
+        msg: "Target hosts determined: {{ target_hosts }}"
+
+    - name: Trigger sudo web UI backend to update sudoers (example)
+      uri:
+        url: "http://{{ inventory_hostname }}:{{ sudo_webui_port | default(5000) }}/api/request"
+        method: POST
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          requester: "ansible"
+          action: "add"
+          sudo_group: "{{ sudo_group }}"
+          template: "{{ sudo_template }}"
+          hostnames: "{{ target_hosts }}"
+          service_account: false
+          duo_exclude: false
+          expiry_days: "{{ expiry_days | default(0) }}"
+      delegate_to: localhost
+      when: target_hosts | length > 0
+
+    # Additional tasks could clone the Git repository and update sudoers
+    # files directly if desired.
