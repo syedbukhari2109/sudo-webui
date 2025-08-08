@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Self‑Service Sudo Manager</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 2rem;
+      background-color: #f7f7f7;
+    }
+    h1 {
+      color: #333;
+    }
+    form {
+      background: #fff;
+      padding: 1.5rem;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      max-width: 600px;
+    }
+    .form-group {
+      margin-bottom: 1rem;
+    }
+    label {
+      display: block;
+      margin-bottom: 0.3rem;
+      font-weight: bold;
+    }
+    input[type="text"],
+    select,
+    input[type="number"] {
+      width: 100%;
+      padding: 0.4rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+    .checkbox-group label {
+      margin-left: 0.5rem;
+      font-weight: normal;
+    }
+    button {
+      padding: 0.6rem 1.2rem;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:disabled {
+      background-color: #999;
+      cursor: not-allowed;
+    }
+    #result {
+      margin-top: 1rem;
+      padding: 1rem;
+      background-color: #e6ffee;
+      border: 1px solid #b3ffcc;
+      display: none;
+    }
+    #error {
+      margin-top: 1rem;
+      padding: 1rem;
+      background-color: #ffe6e6;
+      border: 1px solid #ffb3b3;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>Self‑Service Sudo Manager</h1>
+  <form id="sudoForm">
+    <div class="form-group">
+      <label for="hostnames">Hostnames (comma‑separated)</label>
+      <input type="text" id="hostnames" placeholder="e.g. host1,host2" />
+    </div>
+    <div class="form-group">
+      <label for="action">Action</label>
+      <select id="action">
+        <option value="add">Add group</option>
+        <option value="remove">Remove group</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="sudo_group">Sudo Group</label>
+      <input type="text" id="sudo_group" placeholder="Enter group name" />
+    </div>
+    <div class="form-group">
+      <label for="template">Command Template</label>
+      <select id="template">
+        <option value="" disabled selected>Loading templates…</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="expiry">Expiry (days, 0 for permanent)</label>
+      <input type="number" id="expiry" min="0" value="0" />
+    </div>
+    <div class="form-group checkbox-group">
+      <input type="checkbox" id="service_account" />
+      <label for="service_account">Service account</label>
+    </div>
+    <div class="form-group checkbox-group">
+      <input type="checkbox" id="duo_exclude" />
+      <label for="duo_exclude">Exclude from Duo MFA</label>
+    </div>
+    <button type="submit">Submit Request</button>
+  </form>
+  <div id="result"></div>
+  <div id="error"></div>
+
+  <script>
+    // URL of the backend API (adjust port if necessary)
+    const API_BASE = 'http://127.0.0.1:5050/api';
+
+    // Populate templates dropdown
+    async function loadTemplates() {
+      try {
+        const res = await fetch(`${API_BASE}/templates`);
+        const data = await res.json();
+        const templateSelect = document.getElementById('template');
+        templateSelect.innerHTML = '';
+        Object.keys(data).forEach(name => {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          templateSelect.appendChild(opt);
+        });
+      } catch (err) {
+        document.getElementById('error').textContent = 'Failed to load templates';
+        document.getElementById('error').style.display = 'block';
+      }
+    }
+
+    document.getElementById('sudoForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      document.getElementById('result').style.display = 'none';
+      document.getElementById('error').style.display = 'none';
+      const hostnames = document.getElementById('hostnames').value.split(',').map(h => h.trim()).filter(Boolean);
+      const action = document.getElementById('action').value;
+      const sudo_group = document.getElementById('sudo_group').value.trim();
+      const template = document.getElementById('template').value;
+      const expiry_days = parseInt(document.getElementById('expiry').value, 10) || 0;
+      const service_account = document.getElementById('service_account').checked;
+      const duo_exclude = document.getElementById('duo_exclude').checked;
+      if (!sudo_group || !template || hostnames.length === 0) {
+        document.getElementById('error').textContent = 'Please fill in all required fields.';
+        document.getElementById('error').style.display = 'block';
+        return;
+      }
+      try {
+        const res = await fetch(`${API_BASE}/request`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            requester: 'webui',
+            action,
+            sudo_group,
+            template,
+            hostnames,
+            service_account,
+            duo_exclude,
+            expiry_days
+          })
+        });
+        const resp = await res.json();
+        if (res.ok) {
+          document.getElementById('result').textContent = `Request submitted successfully. Request ID: ${resp.request_id}  Expiry date: ${resp.expiry_date || 'none'}`;
+          document.getElementById('result').style.display = 'block';
+          document.getElementById('sudoForm').reset();
+        } else {
+          document.getElementById('error').textContent = resp.error || 'Request failed';
+          document.getElementById('error').style.display = 'block';
+        }
+      } catch (err) {
+        document.getElementById('error').textContent = 'Error submitting request';
+        document.getElementById('error').style.display = 'block';
+      }
+    });
+
+    window.addEventListener('load', loadTemplates);
+  </script>
+</body>
+</html>
